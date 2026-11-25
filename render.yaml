@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: nse-stocks-intraday-bot
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: TZ
+        value: Asia/Kolkata
+      - key: DATA_MODE
+        value: live
+      - key: TELEGRAM_ENABLED
+        value: "True"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: RISK_PER_TRADE_INR
+        value: "1000"
+      - key: MAX_CAPITAL_PER_TRADE_INR
+        value: "100000"
+      - key: MAX_TRADES_PER_DAY
+        value: "1"
