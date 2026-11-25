@@ -36,6 +36,7 @@ class NSEDataFeed:
         self._session: Optional[c_requests.Session] = None
         self._cookies_warmed_at: Optional[datetime] = None
         self._yf_sector_cache: Dict[str, List[str]] = {}
+        self._fo_securities_cache: Optional[set] = None
 
     def _get_session(self, force_refresh: bool = False) -> c_requests.Session:
         now = datetime.now(IST)
@@ -103,10 +104,44 @@ class NSEDataFeed:
             "source": "UNAVAILABLE",
         }
 
+    def fetch_fo_securities_set(self) -> set:
+        """
+        Fetch the authoritative list of NSE 'Securities in F&O' stock symbols.
+        Uses /api/master-quote with /api/market-data-pre-open?key=FO fallback.
+        """
+        if self._fo_securities_cache is not None:
+            return self._fo_securities_cache
+
+        if self.mode == "simulated":
+            self._fo_securities_cache = set(FO_STOCK_TO_SECTOR.keys())
+            return self._fo_securities_cache
+
+        fo_set = set()
+        mq = self._nse_get_json("https://www.nseindia.com/api/master-quote")
+        if isinstance(mq, list) and mq:
+            fo_set = {
+                str(s).strip().upper()
+                for s in mq
+                if str(s).strip() and str(s).strip().upper() not in INDEX_DERIVATIVE_SYMBOLS
+            }
+
+        if not fo_set:
+            fo_pre = self._nse_get_json("https://www.nseindia.com/api/market-data-pre-open?key=FO")
+            fo_set = {
+                str(d.get("metadata", {}).get("symbol", "")).strip().upper()
+                for d in fo_pre.get("data", [])
+                if d.get("metadata", {}).get("symbol")
+            } - INDEX_DERIVATIVE_SYMBOLS
+
+        if fo_set:
+            self._fo_securities_cache = fo_set
+            logger.info(f"Loaded {len(fo_set)} NSE Securities in F&O.")
+        return fo_set
+
     def fetch_top_oi_change_stocks(self, top_n: int = 5) -> List[Dict]:
         """
-        09:25 AM: Fetch Top N stocks by Change in OI % from NSE OI Spurts.
-        Excludes index contracts (NIFTY, BANKNIFTY, FINNIFTY, etc.).
+        09:25 AM: Fetch Top N stocks strictly from 'Securities in F&O' by Change in OI %.
+        Excludes all index derivatives (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYFPI, etc.).
         """
         if self.mode == "simulated":
             return [
@@ -117,12 +152,15 @@ class NSEDataFeed:
                 {"symbol": "RADICO", "oi_change_pct": 22.40, "ltp": 2140.0},
             ][:top_n]
 
+        fo_securities = self.fetch_fo_securities_set()
         payload = self._nse_get_json("https://www.nseindia.com/api/live-analysis-oi-spurts-underlyings")
         rows = payload.get("data", [])
         stocks = []
         for item in rows:
             sym = str(item.get("symbol", "")).strip().upper()
             if not sym or sym in INDEX_DERIVATIVE_SYMBOLS:
+                continue
+            if fo_securities and sym not in fo_securities:
                 continue
             try:
                 oi_pct = float(item.get("avgInOI", 0.0) or 0.0)
@@ -206,19 +244,26 @@ class NSEDataFeed:
                 ][:top_n],
             }
 
+        fo_securities = self.fetch_fo_securities_set()
+
         def _parse_variation(endpoint: str) -> List[Dict]:
             data = self._nse_get_json(f"https://www.nseindia.com/api/live-analysis-variations?index={endpoint}")
-            rows = data.get("FOSec", {}).get("data") or data.get("allSec", {}).get("data") or []
+            # Strictly use FOSec ("Securities in F&O") only — never allSec cash stocks
+            rows = data.get("FOSec", {}).get("data") or []
             parsed = []
-            for r in rows[:top_n]:
+            for r in rows:
                 sym = str(r.get("symbol", "")).strip().upper()
-                if not sym:
+                if not sym or sym in INDEX_DERIVATIVE_SYMBOLS:
+                    continue
+                if fo_securities and sym not in fo_securities:
                     continue
                 parsed.append({
                     "symbol": sym,
                     "perChange": round(float(r.get("perChange", r.get("net_price", 0.0)) or 0.0), 2),
                     "ltp": float(r.get("ltp", 0.0) or 0.0),
                 })
+                if len(parsed) >= top_n:
+                    break
             return parsed
 
         return {

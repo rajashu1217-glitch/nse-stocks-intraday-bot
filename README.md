@@ -9,9 +9,10 @@ Automated intraday stocks strategy running strictly in **Indian Standard Time (`
   - `Advances > Declines` -> **LONG (Bullish)** bias
   - `Declines > Advances` -> **SHORT (Bearish)** bias
 - **09:25 AM IST** (executes in ~2–4 seconds, well before 09:27 AM):
-  - Fetches Top 5 stocks by **Change in OI %** (`live-analysis-oi-spurts-underlyings`).
-  - **If Bullish (`Advances > Declines`)**: Keeps OI stocks whose sector is among the **Top 5 Bullish Sectors**, OR stocks that are in the **Top 5 Gainers** even if their sector isn't moving; drops the rest.
-  - **If Bearish (`Declines > Advances`)**: Keeps OI stocks that are in the **Top 5 Losers**; drops the rest.
+  - Restricted strictly to **Securities in F&O (`FOSec`)** via NSE `master-quote` / `pre-open?key=FO`.
+  - Fetches Top 5 F&O stocks by **Change in OI %** (`live-analysis-oi-spurts-underlyings`).
+  - **If Bullish (`Advances > Declines`)**: Keeps F&O OI stocks whose sector is among the **Top 5 Bullish Sectors**, OR stocks that are in the **Top 5 F&O Gainers (`FOSec`)** even if their sector isn't moving; drops the rest.
+  - **If Bearish (`Declines > Advances`)**: Keeps F&O OI stocks that are in the **Top 5 F&O Losers (`FOSec`)**; drops the rest.
 
 ### 2. 5-Minute Price Action (09:30 AM – 15:15 PM IST)
 - Ignores the first 3 candles (`09:15`, `09:20`, `09:25`) while recording the day's lowest volume so far.

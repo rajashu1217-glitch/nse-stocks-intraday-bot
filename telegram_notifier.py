@@ -107,13 +107,14 @@ class TelegramNotifier:
             )
         cand_block = "\n".join(cand_lines) if cand_lines else "No candidates found."
         watchlist = ", ".join(res.selected_symbols) if res.selected_symbols else "None"
-        mover_label = "Top 5 Gainers" if res.bias == "LONG" else "Top 5 Losers"
+        mover_label = "Top 5 F&O Gainers" if res.bias == "LONG" else "Top 5 F&O Losers"
         movers_str = ", ".join(f"{m['symbol']} ({m['perChange']:+.2f}%)" for m in res.top_movers[:5]) or "N/A"
 
         msg = (
-            f"<b>📊 [09:25 IST] WATCHLIST FINALIZED ({res.elapsed_seconds}s)</b>\n"
+            f"<b>📊 [09:25 IST] F&amp;O WATCHLIST FINALIZED ({res.elapsed_seconds}s)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🧭 <b>Bias:</b> <b>{res.bias}</b> (Adv {res.advances} vs Dec {res.declines})\n\n"
+            f"🧭 <b>Bias:</b> <b>{res.bias}</b> (Adv {res.advances} vs Dec {res.declines})\n"
+            f"📌 <b>Universe:</b> Securities in F&amp;O Only\n\n"
             f"🏭 <b>Top 5 Sectors:</b>\n{sec_lines}\n\n"
             f"🔥 <b>{mover_label}:</b> {movers_str}\n\n"
             f"🔍 <b>Top 5 OI % Change Audit:</b>\n{cand_block}\n\n"

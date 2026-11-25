@@ -99,6 +99,26 @@ class TestStockSelectionAndStrategy(unittest.TestCase):
         self.assertGreaterEqual(len(trades), 2)
         self.assertEqual(trades[0]["direction"], "SHORT")
 
+    def test_live_fo_only_filtering(self):
+        feed = NSEDataFeed(mode="live")
+        feed.fetch_fo_securities_set = lambda: {"DABUR", "MARICO", "RADICO"}
+        feed._nse_get_json = lambda url: (
+            {"data": [
+                {"symbol": "NIFTYFPI", "avgInOI": 99.0, "underlyingValue": 1000},
+                {"symbol": "NONFO_CASH", "avgInOI": 80.0, "underlyingValue": 500},
+                {"symbol": "DABUR", "avgInOI": 40.0, "underlyingValue": 430},
+            ]}
+            if "oi-spurts" in url
+            else {
+                "FOSec": {"data": [{"symbol": "MARICO", "perChange": 4.2, "ltp": 935}]},
+                "allSec": {"data": [{"symbol": "DMART", "perChange": 9.9, "ltp": 4000}]},
+            }
+        )
+        oi = feed.fetch_top_oi_change_stocks(top_n=5)
+        self.assertEqual([x["symbol"] for x in oi], ["DABUR"])
+        movers = feed.fetch_top_gainers_losers(top_n=5)
+        self.assertEqual([x["symbol"] for x in movers["gainers"]], ["MARICO"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
