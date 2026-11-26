@@ -163,16 +163,32 @@ YF_SECTOR_TO_NSE: Dict[str, List[str]] = {
 @dataclass
 class BotConfig:
     # Timings (IST)
+    STAGE1_PREMARKET_TIME: str = "08:55"
     PREOPEN_TIME: str = "09:07"
     SELECTION_TIME: str = "09:25"
     MARKET_OPEN_TIME: str = "09:15"
     PRICE_ACTION_START_TIME: str = "09:30"
     SQUAREOFF_TIME: str = "15:15"
 
-    # Stock Selection Rules
-    TOP_OI_COUNT: int = 5
-    TOP_SECTORS_COUNT: int = 5
-    TOP_MOVERS_COUNT: int = 5
+    # Stage 1 (Pre-Market Sniper Shortlist) Rules
+    STAGE1_MIN_STOCKS: int = 10
+    STAGE1_MAX_STOCKS: int = 15
+    NR4_LOOKBACK_DAYS: int = 4
+    VOLUME_SURGE_LOOKBACK_DAYS: int = 20
+    MIN_VOLUME_SURGE_RATIO: float = 1.3
+    EXHAUSTION_STREAK_DAYS: int = 3
+    ATR_PERIOD: int = 14
+
+    # Stage 2 (09:07 + 09:25 Live Sniper Filter) Rules
+    BREADTH_MISMATCH_MODE: str = os.getenv("BREADTH_MISMATCH_MODE", "skip")  # 'skip' or 'half_qty'
+    TOP_SECTORS_COUNT: int = 3
+    MIN_SECTOR_MOVE_PCT: float = 0.2
+    SWEET_SPOT_MIN_PCT: float = 0.5
+    SWEET_SPOT_MAX_PCT: float = 3.0
+    MIN_RELATIVE_STRENGTH_PCT: float = 0.5
+    OPENING_VOL_SURGE_MULT: float = 2.0
+    TOP_OI_COUNT: int = 10
+    FINAL_WATCHLIST_MAX: int = 2
 
     # Price Action Rules (5-Minute Timeframe)
     TIMEFRAME: str = "5m"

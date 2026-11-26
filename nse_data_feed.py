@@ -4,9 +4,12 @@ Uses curl_cffi (Chrome TLS impersonation) for reliable NSE API access,
 yfinance for 5-minute intraday OHLCV candles, and realistic simulation for offline testing.
 """
 
+import io
 import logging
 import random
+import zipfile
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, date
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
@@ -183,16 +186,16 @@ class NSEDataFeed:
         """Fetch NSE Sectoral Indices and their % change from allIndices."""
         if self.mode == "simulated":
             return [
-                {"index": "NIFTY FMCG", "percentChange": 3.79, "last": 58420.0},
-                {"index": "NIFTY PHARMA", "percentChange": 2.38, "last": 22910.0},
-                {"index": "NIFTY PRIVATE BANK", "percentChange": 2.21, "last": 26800.0},
-                {"index": "NIFTY FINANCIAL SERVICES", "percentChange": 2.17, "last": 25950.0},
-                {"index": "NIFTY AUTO", "percentChange": 1.16, "last": 24100.0},
-                {"index": "NIFTY IT", "percentChange": 1.12, "last": 41200.0},
-                {"index": "NIFTY OIL & GAS", "percentChange": 0.99, "last": 11500.0},
-                {"index": "NIFTY REALTY", "percentChange": 0.02, "last": 980.0},
-                {"index": "NIFTY METAL", "percentChange": -2.04, "last": 9100.0},
-                {"index": "NIFTY MEDIA", "percentChange": -4.44, "last": 1750.0},
+                {"index": "NIFTY FMCG", "percentChange": 1.05, "last": 58420.0},
+                {"index": "NIFTY PHARMA", "percentChange": 0.78, "last": 22910.0},
+                {"index": "NIFTY PRIVATE BANK", "percentChange": 0.62, "last": 26800.0},
+                {"index": "NIFTY FINANCIAL SERVICES", "percentChange": 0.45, "last": 25950.0},
+                {"index": "NIFTY AUTO", "percentChange": 0.30, "last": 24100.0},
+                {"index": "NIFTY IT", "percentChange": 0.15, "last": 41200.0},
+                {"index": "NIFTY OIL & GAS", "percentChange": 0.10, "last": 11500.0},
+                {"index": "NIFTY REALTY", "percentChange": -0.15, "last": 980.0},
+                {"index": "NIFTY METAL", "percentChange": -1.10, "last": 9100.0},
+                {"index": "NIFTY MEDIA", "percentChange": -1.45, "last": 1750.0},
             ]
 
         payload = self._nse_get_json("https://www.nseindia.com/api/allIndices")
@@ -270,6 +273,219 @@ class NSEDataFeed:
             "gainers": _parse_variation("gainers"),
             "losers": _parse_variation("loosers"),
         }
+
+    def fetch_live_market_breadth(self) -> Dict:
+        """
+        09:25 AM: Fetch live market-wide Advances vs Declines from NSE.
+        Uses /api/live-analysis-advance with getMarketStatistics fallback.
+        """
+        if self.mode == "simulated":
+            return {
+                "advances": 1920,
+                "declines": 1410,
+                "unchanged": 120,
+                "timestamp": datetime.now(IST).strftime("%d-%b-%Y 09:25:00"),
+                "source": "SIMULATED_LIVE",
+            }
+
+        adv_data = self._nse_get_json("https://www.nseindia.com/api/live-analysis-advance")
+        cnt = adv_data.get("advance", {}).get("count", {})
+        if cnt.get("Advances") is not None and cnt.get("Declines") is not None:
+            return {
+                "advances": int(cnt["Advances"]),
+                "declines": int(cnt["Declines"]),
+                "unchanged": int(cnt.get("Unchange") or 0),
+                "timestamp": str(adv_data.get("timestamp") or datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S")),
+                "source": "NSE_LIVE_ADVANCE",
+            }
+
+        stats = self._nse_get_json(
+            "https://www.nseindia.com/api/NextApi/apiClient?functionName=getMarketStatistics"
+        )
+        cap = stats.get("data", {}).get("snapshotCapitalMarket", {})
+        if cap.get("advances") is not None and cap.get("declines") is not None:
+            return {
+                "advances": int(cap["advances"]),
+                "declines": int(cap["declines"]),
+                "unchanged": int(cap.get("unchange") or 0),
+                "timestamp": str(stats.get("data", {}).get("timestamp") or datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S")),
+                "source": "NSE_MARKET_STATS",
+            }
+
+        logger.error("Failed to fetch live NSE market breadth.")
+        return {
+            "advances": 0,
+            "declines": 0,
+            "unchanged": 0,
+            "timestamp": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S"),
+            "source": "UNAVAILABLE",
+        }
+
+    def fetch_live_market_quotes(self) -> Dict[str, Dict]:
+        """
+        09:25 AM: Fetch live % change, LTP, prev close, and traded volume
+        for all NSE EQ stocks via live-analysis-advance + live-analysis-decline.
+        """
+        if self.mode == "simulated":
+            return {
+                "MARICO": {"pchange": 1.95, "lastPrice": 935.0, "previousClose": 917.1, "volume": 240000},
+                "RADICO": {"pchange": 1.65, "lastPrice": 2140.0, "previousClose": 2105.25, "volume": 195000},
+                "DABUR": {"pchange": 4.50, "lastPrice": 430.0, "previousClose": 411.48, "volume": 450000},
+                "SUNPHARMA": {"pchange": 1.45, "lastPrice": 1785.0, "previousClose": 1759.5, "volume": 310000},
+                "TATASTEEL": {"pchange": -1.85, "lastPrice": 152.0, "previousClose": 154.86, "volume": 580000},
+                "SAIL": {"pchange": -1.55, "lastPrice": 114.0, "previousClose": 115.79, "volume": 410000},
+            }
+
+        quotes: Dict[str, Dict] = {}
+        for endpoint, root_key in (
+            ("https://www.nseindia.com/api/live-analysis-advance", "advance"),
+            ("https://www.nseindia.com/api/live-analysis-decline", "decline"),
+        ):
+            payload = self._nse_get_json(endpoint)
+            for row in payload.get(root_key, {}).get("data", []):
+                sym = str(row.get("symbol", "")).strip().upper()
+                if not sym or str(row.get("series", "EQ")).upper() != "EQ":
+                    continue
+                try:
+                    quotes[sym] = {
+                        "pchange": float(row.get("pchange", 0.0) or 0.0),
+                        "lastPrice": float(row.get("lastPrice", 0.0) or 0.0),
+                        "previousClose": float(row.get("previousClose", 0.0) or 0.0),
+                        "volume": int(float(row.get("totalTradedVolumecsv", 0) or 0)),
+                    }
+                except (TypeError, ValueError):
+                    continue
+        return quotes
+
+    def fetch_nifty50_change_pct(self) -> float:
+        """Fetch Nifty 50 live % change."""
+        if self.mode == "simulated":
+            return 0.45
+
+        payload = self._nse_get_json("https://www.nseindia.com/api/allIndices")
+        for item in payload.get("data", []):
+            if str(item.get("index", "")).strip().upper() == "NIFTY 50":
+                try:
+                    return round(float(item.get("percentChange", 0.0) or 0.0), 2)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def fetch_fo_daily_history(
+        self, fo_symbols: set, calendar_days: int = 40
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch ~25+ trading days of official Daily OHLCV for all F&O stocks
+        using NSE UDiFF Bhavcopy CSV zips (fast, zero Yahoo rate-limit).
+        """
+        if self.mode == "simulated":
+            return self._generate_simulated_daily_history(fo_symbols)
+
+        now_ist = datetime.now(IST)
+        # Before 16:00 IST, only use completed trading days strictly prior to today
+        start_offset = 1 if now_ist.strftime("%H:%M") < "16:00" else 0
+        dates = [
+            (now_ist.date() - timedelta(days=offset)).strftime("%Y%m%d")
+            for offset in range(start_offset, start_offset + calendar_days)
+        ]
+
+        bhav_headers = {"Accept": "*/*", "Referer": "https://www.nseindia.com/"}
+
+        def _fetch_one_day(dt_str: str) -> Optional[pd.DataFrame]:
+            url = f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{dt_str}_F_0000.csv.zip"
+            try:
+                sess = c_requests.Session(impersonate="chrome124")
+                resp = sess.get(url, headers=bhav_headers, timeout=10)
+                if resp.status_code != 200:
+                    return None
+                zf = zipfile.ZipFile(io.BytesIO(resp.content))
+                raw = pd.read_csv(zf.open(zf.namelist()[0]))
+                eq = raw[(raw["SctySrs"] == "EQ") & (raw["TckrSymb"].isin(fo_symbols))][
+                    ["TradDt", "TckrSymb", "OpnPric", "HghPric", "LwPric", "ClsPric", "TtlTradgVol"]
+                ].copy()
+                return eq
+            except Exception:
+                return None
+
+        frames: List[pd.DataFrame] = []
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for chunk in pool.map(_fetch_one_day, dates):
+                if chunk is not None and not chunk.empty:
+                    frames.append(chunk)
+
+        if not frames:
+            logger.error("No NSE Bhavcopy daily files retrieved.")
+            return {}
+
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.rename(columns={
+            "TradDt": "date",
+            "TckrSymb": "symbol",
+            "OpnPric": "open",
+            "HghPric": "high",
+            "LwPric": "low",
+            "ClsPric": "close",
+            "TtlTradgVol": "volume",
+        })
+        combined["date"] = pd.to_datetime(combined["date"])
+        combined = combined.sort_values(["symbol", "date"])
+
+        history_map: Dict[str, pd.DataFrame] = {}
+        for sym, grp in combined.groupby("symbol"):
+            history_map[str(sym)] = grp.reset_index(drop=True)
+
+        logger.info(f"Loaded {len(frames)} Bhavcopy days for {len(history_map)} F&O stocks.")
+        return history_map
+
+    def _generate_simulated_daily_history(self, fo_symbols: set) -> Dict[str, pd.DataFrame]:
+        """Generate deterministic 25-day daily OHLCV history for simulated Stage 1 testing."""
+        history_map: Dict[str, pd.DataFrame] = {}
+        base_date = datetime.now(IST).date() - timedelta(days=30)
+        priority_syms = ["MARICO", "RADICO", "DABUR", "SUNPHARMA", "TATASTEEL", "SAIL"]
+        others = [s for s in sorted(list(fo_symbols)) if s not in priority_syms][:14]
+        sample_syms = priority_syms + others
+
+        for idx, sym in enumerate(sample_syms):
+            rows = []
+            px = 500.0 + idx * 45.0
+            for d in range(25):
+                dt = base_date + timedelta(days=d)
+                o = px
+                rng_size = px * 0.018
+                vol = 1000000
+                if d == 22:
+                    c = o + rng_size * 0.6
+                    h, l = o + rng_size, o - rng_size * 0.2
+                elif d == 23:
+                    c = o - rng_size * 0.5
+                    h, l = o + rng_size * 0.2, o - rng_size
+                elif d == 24:
+                    if sym in priority_syms:
+                        c = o + rng_size * 0.35
+                        h = max(o, c) + px * 0.002
+                        l = min(o, c) - px * 0.002
+                        vol = 1850000
+                    else:
+                        c = o + rng_size * 0.9
+                        h = o + rng_size
+                        l = o - rng_size * 0.1
+                        vol = 900000
+                else:
+                    c = o + (rng_size * 0.3 if d % 2 == 0 else -rng_size * 0.25)
+                    h = max(o, c) + px * 0.006
+                    l = min(o, c) - px * 0.006
+                rows.append({
+                    "date": pd.Timestamp(dt),
+                    "symbol": sym,
+                    "open": round(o, 2),
+                    "high": round(h, 2),
+                    "low": round(l, 2),
+                    "close": round(c, 2),
+                    "volume": vol,
+                })
+                px = c
+            history_map[sym] = pd.DataFrame(rows)
+        return history_map
 
     def get_stock_sectors(self, symbol: str) -> List[str]:
         """Resolve an F&O stock symbol to its NSE Sectoral Index name(s)."""

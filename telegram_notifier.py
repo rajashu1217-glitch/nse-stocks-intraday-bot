@@ -92,34 +92,52 @@ class TelegramNotifier:
         )
         return self.send_message(msg)
 
+    def notify_stage1_watchlist(self, stage1) -> bool:
+        lines = []
+        for s in stage1.shortlist:
+            lines.append(
+                f"  • <b>{s.symbol}</b> [{s.tag}] | Vol: <code>{s.vol_ratio:.2f}x</code> | "
+                f"ATR: <code>{s.atr_pct:.2f}%</code> | {s.sectors[0] if s.sectors else 'N/A'}"
+            )
+        block = "\n".join(lines) if lines else "  • None"
+        msg = (
+            f"<b>🎯 [STAGE 1: 08:55 IST] PRE-MARKET F&amp;O WATCHLIST ({stage1.elapsed_seconds}s)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Scanned:</b> {stage1.total_fo_scanned} F&amp;O Stocks | "
+            f"<b>NR4+Vol≥1.3x:</b> {stage1.nr4_count} | <b>ATR Backup:</b> {stage1.backup_count}\n\n"
+            f"📝 <b>Shortlisted ({len(stage1.shortlist)}):</b>\n{block}\n\n"
+            f"⏭️ Next: 09:07 Pre-Open + 09:25 Live Sniper Filter"
+        )
+        return self.send_message(msg)
+
     def notify_stock_selection(self, res) -> bool:
         sec_lines = "\n".join(
             f"  • {s['index']}: <code>{s['percentChange']:+.2f}%</code>"
-            for s in res.top_sectors[:5]
+            for s in res.top_sectors[:3]
         ) or "  • N/A"
 
         cand_lines = []
         for c in res.candidates:
-            mark = "✅" if c.selected else "❌"
+            mark = "✅" if c.selected else ("⭐" if c.reason.startswith("A+") else "❌")
             cand_lines.append(
-                f"{mark} <b>{c.symbol}</b> | OI: <code>+{c.oi_change_pct:.2f}%</code> | "
-                f"Sec: {c.best_sector} (<code>{c.sector_pct:+.2f}%</code>)\n   <i>{c.reason}</i>"
+                f"{mark} <b>{c.symbol}</b> ({c.stock_pct:+.2f}%) | {c.best_sector} ({c.sector_pct:+.2f}%)\n"
+                f"   <i>{c.reason}</i>"
             )
-        cand_block = "\n".join(cand_lines) if cand_lines else "No candidates found."
-        watchlist = ", ".join(res.selected_symbols) if res.selected_symbols else "None"
-        mover_label = "Top 5 F&O Gainers" if res.bias == "LONG" else "Top 5 F&O Losers"
-        movers_str = ", ".join(f"{m['symbol']} ({m['perChange']:+.2f}%)" for m in res.top_movers[:5]) or "N/A"
+        cand_block = "\n".join(cand_lines) if cand_lines else "No candidates passed Stage 1 / Double Breadth Lock."
+        watchlist = ", ".join(res.selected_symbols) if res.selected_symbols else "NONE (No Trade)"
+        lock_txt = "LOCKED ✅" if res.breadth_locked else ("MISMATCH ⚠️ (Half Qty)" if res.qty_multiplier == 0.5 else "MISMATCH ❌ (Skip Day)")
 
         msg = (
-            f"<b>📊 [09:25 IST] F&amp;O WATCHLIST FINALIZED ({res.elapsed_seconds}s)</b>\n"
+            f"<b>🎯 [STAGE 2: 09:25 IST] SNIPER WATCHLIST ({res.elapsed_seconds}s)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🧭 <b>Bias:</b> <b>{res.bias}</b> (Adv {res.advances} vs Dec {res.declines})\n"
-            f"📌 <b>Universe:</b> Securities in F&amp;O Only\n\n"
-            f"🏭 <b>Top 5 Sectors:</b>\n{sec_lines}\n\n"
-            f"🔥 <b>{mover_label}:</b> {movers_str}\n\n"
-            f"🔍 <b>Top 5 OI % Change Audit:</b>\n{cand_block}\n\n"
-            f"🎯 <b>Selected Watchlist (09:30 Scan):</b> <b>{watchlist}</b>\n"
-            f"⚙️ <i>Rule: Ignore first 3 5m bars (09:15-09:25) → Lowest-Vol Candle ≤ 0.5%</i>"
+            f"🔐 <b>Double Breadth Lock:</b> <b>{lock_txt}</b>\n"
+            f"  • 09:07 Pre-Open: Adv {res.preopen_adv} vs Dec {res.preopen_dec}\n"
+            f"  • 09:25 Live Mkt: Adv {res.live_adv} vs Dec {res.live_dec}\n"
+            f"🧭 <b>Bias:</b> <b>{res.bias}</b> | <b>Nifty 50:</b> <code>{res.nifty50_pct:+.2f}%</code>\n\n"
+            f"🏭 <b>Top Qualifying Sectors:</b>\n{sec_lines}\n\n"
+            f"🔍 <b>Stage 1 ({res.stage1_count}) → Stage 2 Sniper Audit:</b>\n{cand_block}\n\n"
+            f"🏆 <b>Final Sniper Watchlist (1-2 Stocks):</b> <b>{watchlist}</b>\n"
+            f"⚙️ <i>Execution: Ignore first 3 5m bars (09:15-09:25) → Lowest-Vol Candle ≤ 0.5%</i>"
         )
         return self.send_message(msg)
 

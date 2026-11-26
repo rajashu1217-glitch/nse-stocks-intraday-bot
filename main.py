@@ -34,9 +34,13 @@ def main():
 
     if args.test_selection:
         engine = NseStocksStrategyEngine(mode="live")
+        s1 = engine.step_0855_stage1()
         engine.step_0907_preopen()
         res = engine.step_0925_selection()
-        print(f"Selection finished in {res.elapsed_seconds}s -> {res.selected_symbols}")
+        print(
+            f"Stage 1 ({s1.elapsed_seconds}s): {len(s1.shortlist)} stocks | "
+            f"Stage 2 ({res.elapsed_seconds}s) Bias={res.bias} -> {res.selected_symbols}"
+        )
         return
 
     if args.mode == "test":

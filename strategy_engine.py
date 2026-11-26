@@ -18,7 +18,7 @@ import pandas as pd
 
 from config import IST, config
 from nse_data_feed import NSEDataFeed
-from stock_selector import StockSelector, SelectionResult
+from stock_selector import StockSelector, Stage1Result, SelectionResult
 from telegram_notifier import notifier
 from excel_logger import logger_excel
 
@@ -58,6 +58,7 @@ class NseStocksStrategyEngine:
         self.selector = StockSelector(self.data_feed)
 
         self.date_str: str = datetime.now(IST).strftime("%Y-%m-%d")
+        self.stage1_result: Optional[Stage1Result] = None
         self.preopen_breadth: Optional[Dict] = None
         self.selection_result: Optional[SelectionResult] = None
         self.scanners: Dict[str, StockScannerState] = {}
@@ -67,6 +68,12 @@ class NseStocksStrategyEngine:
         self.trades_taken_today: int = 0
         self.eod_completed: bool = False
 
+    def step_0855_stage1(self) -> Stage1Result:
+        """08:55 AM IST (Stage 1): Shortlist 10-15 F&O stocks (NR4 + Vol >= 1.3x + No 3d Exhaustion)."""
+        self.stage1_result = self.selector.run_stage1_premarket_watchlist()
+        notifier.notify_stage1_watchlist(self.stage1_result)
+        return self.stage1_result
+
     def step_0907_preopen(self) -> Dict:
         """09:07 AM IST: Fetch NSE Pre-Open Breadth and broadcast Alert #1."""
         self.preopen_breadth = self.selector.run_0907_preopen_breadth()
@@ -74,11 +81,15 @@ class NseStocksStrategyEngine:
         return self.preopen_breadth
 
     def step_0925_selection(self) -> SelectionResult:
-        """09:25 AM IST: Run OI + Sector/Mover stock selection and broadcast Alert #2."""
+        """09:25 AM IST (Stage 2): Narrow Stage 1 shortlist to 1-2 Sniper Stocks."""
+        if self.stage1_result is None:
+            self.stage1_result = self.selector.run_stage1_premarket_watchlist()
         if self.preopen_breadth is None:
             self.preopen_breadth = self.selector.run_0907_preopen_breadth()
 
-        self.selection_result = self.selector.run_0925_stock_selection(self.preopen_breadth)
+        self.selection_result = self.selector.run_stage2_live_sniper_filter(
+            self.preopen_breadth, self.stage1_result
+        )
         self.scanners = {
             sym: StockScannerState(symbol=sym, direction=self.selection_result.bias)
             for sym in self.selection_result.selected_symbols
@@ -91,10 +102,12 @@ class NseStocksStrategyEngine:
         risk_per_share = abs(entry_price - stop_loss)
         if risk_per_share <= 0 or entry_price <= 0:
             return 0
-        qty_by_risk = int(config.RISK_PER_TRADE_INR / risk_per_share)
-        qty_by_cap = int(config.MAX_CAPITAL_PER_TRADE_INR / entry_price)
+        mult = self.selection_result.qty_multiplier if self.selection_result else 1.0
+        if mult <= 0:
+            return 0
+        qty_by_risk = int((config.RISK_PER_TRADE_INR * mult) / risk_per_share)
+        qty_by_cap = int((config.MAX_CAPITAL_PER_TRADE_INR * mult) / entry_price)
         raw_qty = max(2, min(qty_by_risk, qty_by_cap))
-        # Round down to even integer (minimum 2 shares)
         even_qty = max(2, raw_qty - (raw_qty % 2))
         return even_qty
 
@@ -482,7 +495,8 @@ class NseStocksStrategyEngine:
         logger.info(f"Starting Full Simulation | Bias={bias_scenario} | Outcome={outcome}")
         self.data_feed.mode = "simulated"
 
-        # 1. 09:07 Pre-Open Breadth
+        # 1. Stage 1 Pre-Market (08:55) & 09:07 Pre-Open Breadth
+        self.step_0855_stage1()
         if bias_scenario == "SHORT":
             self.preopen_breadth = {
                 "advances": 480,
@@ -496,18 +510,23 @@ class NseStocksStrategyEngine:
         else:
             self.step_0907_preopen()
 
-        # 2. 09:25 Stock Selection
+        # 2. 09:25 Stage 2 Live Sniper Selection
         if bias_scenario == "SHORT":
-            # Ensure simulated OI stocks match Top 5 Losers for bearish test
+            orig_live_b = self.data_feed.fetch_live_market_breadth
+            orig_nifty = self.data_feed.fetch_nifty50_change_pct
             orig_oi = self.data_feed.fetch_top_oi_change_stocks
-            self.data_feed.fetch_top_oi_change_stocks = lambda top_n=5: [
+            self.data_feed.fetch_live_market_breadth = lambda: {
+                "advances": 900, "declines": 2100, "unchanged": 100,
+                "timestamp": "SIMULATED_BEARISH_LIVE", "source": "SIMULATED",
+            }
+            self.data_feed.fetch_nifty50_change_pct = lambda: -0.45
+            self.data_feed.fetch_top_oi_change_stocks = lambda top_n=10: [
                 {"symbol": "TATASTEEL", "oi_change_pct": 44.10, "ltp": 152.0},
                 {"symbol": "SAIL", "oi_change_pct": 38.20, "ltp": 114.0},
-                {"symbol": "HINDALCO", "oi_change_pct": 31.50, "ltp": 645.0},
-                {"symbol": "DABUR", "oi_change_pct": 24.10, "ltp": 430.0},
-                {"symbol": "ZEEL", "oi_change_pct": 21.80, "ltp": 128.0},
             ][:top_n]
             self.step_0925_selection()
+            self.data_feed.fetch_live_market_breadth = orig_live_b
+            self.data_feed.fetch_nifty50_change_pct = orig_nifty
             self.data_feed.fetch_top_oi_change_stocks = orig_oi
         else:
             self.step_0925_selection()

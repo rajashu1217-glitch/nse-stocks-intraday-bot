@@ -1,4 +1,4 @@
-"""Unit tests for NSE Stocks Intraday Strategy & Stock Selection."""
+"""Unit tests for 2-Stage Sniper Stock Finder & 5m Price Action Strategy."""
 
 import os
 os.environ["TELEGRAM_ENABLED"] = "False"
@@ -7,9 +7,9 @@ import unittest
 from datetime import datetime, timedelta
 import pandas as pd
 
-from config import IST
+from config import IST, config
 from strategy_engine import NseStocksStrategyEngine
-from stock_selector import StockSelector
+from stock_selector import StockSelector, Stage1Result, Stage1Stock
 from nse_data_feed import NSEDataFeed
 
 
@@ -24,46 +24,72 @@ def make_bars(bars_spec):
     return pd.DataFrame(rows).set_index("timestamp")
 
 
-class TestStockSelectionAndStrategy(unittest.TestCase):
-    def test_bullish_selection_sector_and_gainer_override(self):
+class TestTwoStageSniperAndStrategy(unittest.TestCase):
+    def test_stage1_nr4_vol_surge_and_no_exhaustion(self):
         feed = NSEDataFeed(mode="simulated")
         selector = StockSelector(feed)
-        breadth = selector.run_0907_preopen_breadth()
-        self.assertEqual(breadth["bias"], "LONG")
-        res = selector.run_0925_stock_selection(breadth)
-        # DABUR & MARICO (NIFTY FMCG +3.79%), SUNPHARMA (NIFTY PHARMA +2.38%), RADICO (NIFTY FMCG + Top Gainer)
-        # TATASTEEL (NIFTY METAL -2.04% & not Top Gainer) -> removed!
-        self.assertIn("DABUR", res.selected_symbols)
-        self.assertIn("SUNPHARMA", res.selected_symbols)
-        self.assertNotIn("TATASTEEL", res.selected_symbols)
-        self.assertLess(res.elapsed_seconds, 5.0)
+        s1 = selector.run_stage1_premarket_watchlist()
+        syms = [s.symbol for s in s1.shortlist]
+        self.assertGreaterEqual(len(syms), 6)
+        self.assertIn("MARICO", syms)
+        self.assertIn("RADICO", syms)
 
-    def test_bearish_selection_requires_top_5_losers(self):
+    def test_stage2_sniper_sweet_spot_rs_and_double_lock(self):
         feed = NSEDataFeed(mode="simulated")
-        feed.fetch_top_oi_change_stocks = lambda top_n=5: [
-            {"symbol": "TATASTEEL", "oi_change_pct": 40.0, "ltp": 152.0},
-            {"symbol": "DABUR", "oi_change_pct": 35.0, "ltp": 430.0},
-        ]
         selector = StockSelector(feed)
-        res = selector.run_0925_stock_selection({"bias": "SHORT", "advances": 400, "declines": 1500, "unchanged": 50})
-        self.assertEqual(res.selected_symbols, ["TATASTEEL"])
+        s1 = selector.run_stage1_premarket_watchlist()
+        preopen = selector.run_0907_preopen_breadth()
+        res = selector.run_stage2_live_sniper_filter(preopen, s1)
+        self.assertTrue(res.breadth_locked)
+        self.assertEqual(res.bias, "LONG")
+        # DABUR (+4.50%) must be rejected (> 3.0% overextended), MARICO (+1.95%) & RADICO (+1.65%) selected
+        self.assertIn("MARICO", res.selected_symbols)
+        self.assertIn("RADICO", res.selected_symbols)
+        self.assertNotIn("DABUR", res.selected_symbols)
+        self.assertLessEqual(len(res.selected_symbols), 2)
+
+    def test_stage2_double_breadth_mismatch_skips(self):
+        feed = NSEDataFeed(mode="simulated")
+        selector = StockSelector(feed)
+        s1 = selector.run_stage1_premarket_watchlist()
+        # 09:07 Bearish, 09:25 Bullish -> Mismatch -> NO_TRADE
+        preopen = {"advances": 400, "declines": 1500, "unchanged": 50, "bias": "SHORT"}
+        res = selector.run_stage2_live_sniper_filter(preopen, s1)
+        self.assertFalse(res.breadth_locked)
+        self.assertEqual(res.bias, "NO_TRADE")
+        self.assertEqual(res.selected_symbols, [])
+
+    def test_stage2_short_gap_up_support_safety_filter(self):
+        feed = NSEDataFeed(mode="simulated")
+        feed.fetch_live_market_breadth = lambda: {"advances": 800, "declines": 2100, "unchanged": 50}
+        feed.fetch_nifty50_change_pct = lambda: -0.40
+        feed.fetch_live_market_quotes = lambda: {
+            "TATASTEEL": {"pchange": -1.90, "lastPrice": 151.0, "previousClose": 153.9, "volume": 400000},
+            "SAIL": {"pchange": -1.75, "lastPrice": 114.0, "previousClose": 116.0, "volume": 420000},
+        }
+        s1 = Stage1Result(
+            timestamp_ist="test",
+            total_fo_scanned=2,
+            nr4_count=2,
+            backup_count=0,
+            shortlist=[
+                # TATASTEEL sitting directly on a 3-4d Daily Gap-Up Support Zone -> MUST be skipped
+                Stage1Stock("TATASTEEL", "NR4", 153.9, 2.0, 2.0, 1.8, 1000000, 2.1, 0.2, [(149.5, 151.5)], ["NIFTY METAL"]),
+                # SAIL clean with no gap-up support nearby -> MUST be selected
+                Stage1Stock("SAIL", "NR4", 116.0, 1.5, 1.5, 1.6, 1000000, 2.0, 0.2, [], ["NIFTY METAL"]),
+            ],
+        )
+        selector = StockSelector(feed)
+        res = selector.run_stage2_live_sniper_filter({"advances": 400, "declines": 1500, "bias": "SHORT"}, s1)
+        self.assertEqual(res.bias, "SHORT")
+        self.assertEqual(res.selected_symbols, ["SAIL"])
 
     def test_long_ignore_3_bars_size_limit_shift_and_exits(self):
         engine = NseStocksStrategyEngine(mode="simulated")
+        engine.step_0855_stage1()
         engine.step_0907_preopen()
         engine.step_0925_selection()
 
-        # Bars:
-        # 0 (09:15): ignored, vol 100k
-        # 1 (09:20): ignored red small, vol 90k -> sets min_day_vol=90k
-        # 2 (09:25): ignored, vol 120k
-        # 3 (09:30): red, vol 95k (>=90k -> NOT lowest, ignored)
-        # 4 (09:35): red, vol 70k, BUT size = 8/1000 = 0.8% (>0.5% -> rejected, though min_day_vol becomes 70k)
-        # 5 (09:40): red, vol 60k, size = 2/1000 = 0.2% <= 0.5% -> ALERT CANDLE #1 (H=1001, L=999)
-        # 6 (09:45): red, does NOT break 1001, vol 50k, size = 2/999 = 0.2% -> SHIFTS ALERT CANDLE #2 (H=1000, L=998, SL=996)
-        # 7 (09:50): green breaks 1000 -> ENTRY @ 1000, SL=996, risk=4, T1=1008
-        # 8 (09:55): hits 1009 -> T1 booked (50% qty) @ 1008
-        # 72 (15:15): EOD exit remaining 50% @ 1012
         bars = [
             (1000, 1004, 999, 1002, 100000),
             (1002, 1003, 999, 1000, 90000),
@@ -75,7 +101,6 @@ class TestStockSelectionAndStrategy(unittest.TestCase):
             (999, 1002, 998.5, 1001.5, 110000),
             (1001.5, 1009, 1001, 1008.5, 130000),
         ]
-        # Pad up to 15:15 (index 72)
         while len(bars) < 72:
             bars.append((1008, 1011, 1007, 1010, 90000))
         bars.append((1010, 1013, 1009, 1012, 95000))

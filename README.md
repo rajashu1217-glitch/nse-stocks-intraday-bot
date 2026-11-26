@@ -4,15 +4,16 @@ Automated intraday stocks strategy running strictly in **Indian Standard Time (`
 
 ## Strategy Rules
 
-### 1. Stock Selection (09:07 AM – 09:27 AM IST)
-- **09:07 AM IST**: Fetches NSE Pre-Open Market `Advances` vs `Declines`.
-  - `Advances > Declines` -> **LONG (Bullish)** bias
-  - `Declines > Advances` -> **SHORT (Bearish)** bias
-- **09:25 AM IST** (executes in ~2–4 seconds, well before 09:27 AM):
-  - Restricted strictly to **Securities in F&O (`FOSec`)** via NSE `master-quote` / `pre-open?key=FO`.
-  - Fetches Top 5 F&O stocks by **Change in OI %** (`live-analysis-oi-spurts-underlyings`).
-  - **If Bullish (`Advances > Declines`)**: Keeps F&O OI stocks whose sector is among the **Top 5 Bullish Sectors**, OR stocks that are in the **Top 5 F&O Gainers (`FOSec`)** even if their sector isn't moving; drops the rest.
-  - **If Bearish (`Declines > Advances`)**: Keeps F&O OI stocks that are in the **Top 5 F&O Losers (`FOSec`)**; drops the rest.
+### 1. 2-Stage Sniper Stock Finder Method (Strictly Securities in F&O)
+- **Stage 1 (08:55 AM IST Pre-Market)**: Scans ~218 active NSE F&O stocks via official NSE Bhavcopy daily OHLCV and shortlists 10–15 stocks matching:
+  1. **NR4 Compression**: Previous day's Daily range is the smallest of the last 4 trading days.
+  2. **Volume Surge (`>= 1.3x`)**: Previous day's volume `>= 1.3x` 20-day average volume.
+  3. **No 3-Day Exhaustion**: Not 3 consecutive green or 3 consecutive red daily candles.
+  *(High-ATR + strong-close backup fills up to 10 stocks if NR4 yields too few.)*
+- **Stage 2 (09:07 AM + 09:25 AM IST Live Sniper Filter)** → narrows Stage 1 to **1–2 Final Stocks**:
+  1. **Double Breadth Lock**: 09:07 Pre-Open (`Advances vs Declines`) and 09:25 Live Market (`Advances vs Declines`) must agree in direction (mismatch skips day by default, or `BREADTH_MISMATCH_MODE=half_qty`).
+  2. **Top 2–3 Strongest Sectors**: `> +0.2%` Green Sectors (LONG) or `< -0.2%` Red Sectors (SHORT).
+  3. **Sweet-Spot Move (`0.5%–3.0%`) + A+ Relative Strength**: Excludes `4%+` runners; requires `>= 0.5%` outperformance vs BOTH Nifty 50 AND own Sector, plus priority boost for NSE OI Spurts / Opening Vol `>= 2x`, and Short safety against 3–4d Daily Gap-Up support zones.
 
 ### 2. 5-Minute Price Action (09:30 AM – 15:15 PM IST)
 - Ignores the first 3 candles (`09:15`, `09:20`, `09:25`) while recording the day's lowest volume so far.

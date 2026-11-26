@@ -69,6 +69,7 @@ def run_scheduler_daemon():
     global live_engine
     print("🚀 NSE Stocks Intraday Scheduler started (Asia/Kolkata IST)...")
 
+    did_0855 = False
     did_0907 = False
     did_0925 = False
     did_1515 = False
@@ -86,6 +87,7 @@ def run_scheduler_daemon():
         if current_day != today_str:
             current_day = today_str
             bot_state["session_date"] = today_str
+            did_0855 = False
             did_0907 = False
             did_0925 = False
             did_1515 = False
@@ -103,6 +105,13 @@ def run_scheduler_daemon():
             continue
 
         try:
+            # Stage 1: 08:55 AM IST Pre-Market F&O NR4 + Vol Surge Shortlist
+            if (not did_0855) and ("08:55" <= time_str < "15:10"):
+                bot_state["status"] = "08:55 IST: Stage 1 Pre-Market F&O Scan..."
+                with engine_lock:
+                    live_engine.step_0855_stage1()
+                did_0855 = True
+
             # Step 1: 09:07 AM IST Pre-open Breadth (catch-up allowed up to 09:24)
             if (not did_0907) and ("09:07" <= time_str < "09:25"):
                 bot_state["status"] = "09:07 IST: Fetching NSE Pre-Open Breadth..."
@@ -111,9 +120,9 @@ def run_scheduler_daemon():
                     _sync_state(live_engine)
                 did_0907 = True
 
-            # Step 2: 09:25 AM IST Stock Selection (catch-up allowed up to 15:10)
+            # Stage 2: 09:25 AM IST Double Breadth + Sniper Filter (catch-up allowed up to 15:10)
             if (not did_0925) and ("09:25" <= time_str < "15:10"):
-                bot_state["status"] = "09:25 IST: Selecting Top OI % + Sector/Mover Stocks..."
+                bot_state["status"] = "09:25 IST: Stage 2 Sniper Stock Selection..."
                 with engine_lock:
                     if not did_0907:
                         live_engine.step_0907_preopen()
@@ -201,9 +210,10 @@ def trigger_simulation(bg_tasks: BackgroundTasks, bias: str = "LONG"):
 
 @app.post("/live-scan")
 def trigger_live_scan(bg_tasks: BackgroundTasks):
-    """Manually run a live NSE 09:07 + 09:25 selection snapshot and notify Telegram."""
+    """Manually run Stage 1 + 09:07 + Stage 2 Sniper selection snapshot and notify Telegram."""
     def run_scan():
         snap = NseStocksStrategyEngine(mode="live")
+        snap.step_0855_stage1()
         snap.step_0907_preopen()
         snap.step_0925_selection()
         _sync_state(snap)
