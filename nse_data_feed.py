@@ -200,7 +200,15 @@ class NSEDataFeed:
 
         payload = self._nse_get_json("https://www.nseindia.com/api/allIndices")
         allowed_extra = {"NIFTY BANK", "NIFTY FINANCIAL SERVICES"}
-        excluded_aliases = {"NIFTY FINANCIAL SERVICES 25/50", "NIFTY FINANCIAL SERVICES EX-BANK"}
+        excluded_aliases = {
+            "NIFTY FINANCIAL SERVICES 25/50",
+            "NIFTY FINANCIAL SERVICES EX-BANK",
+            "NIFTY REITS & REALTY",
+            "NIFTY MIDSMALL HEALTHCARE",
+            "NIFTY MIDSMALL FINANCIAL SERVICES",
+            "NIFTY MIDSMALL IT & TELECOM",
+            "NIFTY500 HEALTHCARE",
+        }
         sectors = []
         seen = set()
 
